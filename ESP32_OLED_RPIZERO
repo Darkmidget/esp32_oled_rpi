@@ -1,0 +1,468 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <WiFi.h>          // Include for Wi-Fi capabilities
+#include <WebServer.h>     // Include for creating a web server
+
+// --- Wi-Fi Credentials (IMPORTANT: Replace with your actual network details) ---
+const char* ssid = "";
+const char* password = "";
+
+WebServer server(80); // Create a web server on port 80
+
+// --- OLED Display Definitions ---
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+// OLED_RESET pin is typically connected to a GPIO pin, or -1 if sharing Arduino reset.
+// For ESP32, GPIO4 is a common choice, but ensure it matches your wiring.
+#define OLED_RESET 4
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// --- Bitmap for animation example ---
+#define NUMFLAKES       10 // Number of snowflakes in the animation example
+#define LOGO_HEIGHT     16
+#define LOGO_WIDTH      16
+static const unsigned char PROGMEM logo_bmp[] =
+{ B00000000, B11000000,
+  B00000001, B11000000,
+  B00000001, B11000000,
+  B00000011, B11100000,
+  B00000111, B11110000,
+  B00001111, B11111000,
+  B00011111, B11111100,
+  B00011111, B11111100,
+  B00111111, B11111110,
+  B00111111, B11111110,
+  B01111111, B11111111,
+  B01111111, B11111111,
+  B11111111, B11111111,
+  B11111111, B11111111,
+  B11111111, B11111111,
+  B11111111, B11111111 };
+
+
+// --- Function Prototypes (forward declarations) ---
+// These tell the compiler that these functions exist, even if their full definition
+// appears later in the code. This is crucial for functions called before they are defined.
+void intro();
+void testdrawline();
+void testdrawrect(void);
+void testfillrect(void);
+void testdrawcircle(void);
+void testfillcircle(void);
+void testdrawroundrect(void);
+void testfillroundrect(void);
+void testdrawtriangle(void);
+void testfilltriangle(void);
+void testdrawbitmap(void);
+void testanimate(const uint8_t *bitmap, uint8_t w, uint8_t h);
+
+// --- Web Server Handler Functions ---
+
+// Handles requests to the root URL "/"
+void handleRoot() {
+  String ip = WiFi.localIP().toString();
+  String html = "<h1>ESP32 OLED Web Server</h1>";
+  html += "<p>Connected with IP: " + ip + "</p>";
+  html += "<h3>Control Display:</h3>";
+  html += "<ul>";
+  html += "<li><a href='/display?message=Hello&size=2&x=30&y=25'>Display 'Hello'</a></li>";
+  html += "<li><a href='/clear'>Clear Display</a></li>";
+  html += "<li><a href='/runtests'>Run Graphics Tests</a></li>";
+  html += "</ul>";
+  html += "<p>Use /display?message=YOUR_TEXT&size=1&x=0&y=0 to show custom text.</p>";
+
+  server.send(200, "text/html", html);
+}
+
+// Handles requests to "/display" to show text on the OLED
+// Parameters: message (string), size (int, 1-4), x (int), y (int)
+void handleDisplayMessage() {
+  if (server.hasArg("message")) {
+    String message = server.arg("message");
+    int textSize = 1; // Default text size
+    if (server.hasArg("size")) {
+      textSize = server.arg("size").toInt();
+      // Clamp text size to reasonable values (1 to 4 for common fonts)
+      if (textSize < 1 || textSize > 4) textSize = 1;
+    }
+    int x = 0; // Default X position
+    if (server.hasArg("x")) {
+      x = server.arg("x").toInt();
+    }
+    int y = 0; // Default Y position
+    if (server.hasArg("y")) {
+      y = server.arg("y").toInt();
+    }
+
+    display.clearDisplay();
+    display.setTextSize(textSize);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(x, y);
+    display.println(message);
+    display.display(); // Update the physical display
+    server.send(200, "text/plain", "Message displayed: " + message);
+  } else {
+    server.send(400, "text/plain", "Missing 'message' parameter");
+  }
+}
+
+// Handles requests to "/clear" to clear the OLED display
+void handleClearDisplay() {
+  display.clearDisplay();
+  display.display();
+  server.send(200, "text/plain", "Display cleared.");
+}
+
+// Handles requests to "/runtests" to sequentially run all graphic tests
+void handleRunTests() {
+  server.send(200, "text/plain", "All display tests executed."); // Send response first
+  // Call all the test functions one by one
+  intro();
+  delay(1000);
+  testdrawline();
+  delay(2000);
+  testdrawrect();
+  delay(1000);
+  testfillrect();
+  delay(1000);
+  testdrawcircle();
+  delay(1000);
+  testfillcircle();
+  delay(1000);
+  testdrawroundrect();
+  delay(1000);
+  testfillroundrect();
+  delay(1000);
+  testdrawtriangle();
+  delay(1000);
+  testfilltriangle();
+  delay(2000);
+  testdrawbitmap();
+  delay(2000);
+  // Note: testanimate is designed to loop, so we'll call it with a limited loop
+  // or you might want to call it separately if it's a continuous animation.
+  // For this example, we'll run it for a short duration.
+  testanimate(logo_bmp, LOGO_WIDTH, LOGO_HEIGHT);
+  
+  // After tests, clear display and show IP again
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0,0);
+  display.println("Tests Complete!");
+  display.println("IP Address:");
+  display.println(WiFi.localIP());
+  display.display();
+}
+
+// Handles any requests to unknown URLs
+void handleNotFound() {
+  server.send(404, "text/plain", "Not Found");
+}
+
+// --- Arduino Setup Function ---
+void setup() {
+  Serial.begin(115200); // Initialize serial communication for debugging
+
+  // Initialize OLED display
+  // The 0x3C is the I2C address for most 128x64 OLEDs.
+  // If your display doesn't work, try 0x3D.
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed if display initialization fails
+  }
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0,0);
+  display.println("Connecting to WiFi...");
+  display.display();
+
+  // Connect to Wi-Fi network
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP()); // Print the ESP32's IP address to serial monitor
+
+  // Display IP address on OLED
+  display.clearDisplay();
+  display.println("WiFi Connected!");
+  display.println("IP Address:");
+  display.println(WiFi.localIP());
+  display.display();
+
+  // Set up web server routes
+  server.on("/", handleRoot);
+  server.on("/display", HTTP_GET, handleDisplayMessage);
+  server.on("/clear", HTTP_GET, handleClearDisplay);
+  server.on("/runtests", HTTP_GET, handleRunTests); // New endpoint to run all tests
+  server.onNotFound(handleNotFound); // Handle requests to undefined paths
+
+  server.begin(); // Start the web server
+  Serial.println("HTTP server started");
+}
+
+// --- Arduino Loop Function ---
+// This function runs repeatedly after setup()
+void loop() {
+  server.handleClient(); // This is crucial: it allows the web server to process incoming requests
+  // No other display functions are called directly in loop() to avoid constant updates
+  // and allow control via web requests.
+}
+
+// --- Your Original OLED Display Test Functions (DEFINITIONS) ---
+// These functions are now called via the web server handlers.
+
+void intro() {
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(40, 0);
+  display.println(F("OLED"));
+  display.setCursor(20, 20);
+  display.println(F("Display"));
+  display.setCursor(15, 40);
+  display.println(F("Tutorial"));
+  display.display();// Show initial text
+  delay(100);
+
+  // Scroll in various directions, pausing in-between:
+  display.startscrollright(0x00, 0x0F);
+  delay(2000);
+  display.stopscroll();
+  delay(1000);
+  display.startscrollleft(0x00, 0x0F);
+  delay(2000);
+  display.stopscroll();
+  delay(1000);
+  display.startscrolldiagright(0x00, 0x07);
+  delay(2000);
+  display.startscrolldiagleft(0x00, 0x07);
+  delay(2000);
+  display.stopscroll();
+  delay(1000);
+}
+
+void testdrawline() {
+  int16_t i;
+
+  display.clearDisplay(); // Clear display buffer
+
+  for(i=0; i<display.width(); i+=4) {
+    display.drawLine(0, 0, i, display.height()-1, SSD1306_WHITE);
+    display.display(); // Update screen with each newly-drawn line
+    delay(1);
+  }
+  for(i=0; i<display.height(); i+=4) {
+    display.drawLine(0, 0, display.width()-1, i, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+  delay(250);
+
+  display.clearDisplay();
+
+  for(i=0; i<display.width(); i+=4) {
+    display.drawLine(0, display.height()-1, i, 0, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+  for(i=0; i<display.height(); i+=4) {
+    display.drawLine(0, display.height()-1, display.width()-1, i, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+  delay(250);
+
+  display.clearDisplay();
+
+  for(i=display.width()-1; i>=0; i-=4) {
+    display.drawLine(display.width()-1, display.height()-1, i, 0, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+  for(i=display.height()-1; i>=0; i-=4) {
+    display.drawLine(display.width()-1, display.height()-1, 0, i, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+  delay(250);
+
+  display.clearDisplay();
+
+  for(i=display.width()-1; i>=0; i-=4) {
+    display.drawLine(display.width()-1, 0, i, display.height()-1, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+  for(i=display.height()-1; i>=0; i-=4) {
+    display.drawLine(display.width()-1, 0, 0, i, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+  delay(250);
+}
+
+void testdrawrect(void) {
+  display.clearDisplay();
+
+  for(int16_t i=0; i<display.height()/2; i+=2) {
+    display.drawRect(i, i, display.width()-2*i, display.height()-2*i, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+
+  delay(1000);
+}
+
+void testfillrect(void) {
+  display.clearDisplay();
+
+  for(int16_t i=0; i<display.height()/2; i+=3) {
+    // The INVERSE color is used so rectangles alternate white/black
+    display.fillRect(i, i, display.width()-i*2, display.height()-i*2, SSD1306_INVERSE);
+    display.display();
+    delay(1);
+  }
+
+  delay(2000);
+}
+
+void testdrawcircle(void) {
+  display.clearDisplay();
+
+  for(int16_t i=0; i<max(display.width(),display.height())/2; i+=2) {
+    display.drawCircle(display.width()/2, display.height()/2, i, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+
+  delay(2000);
+}
+
+void testfillcircle(void) {
+  display.clearDisplay();
+
+  for(int16_t i=max(display.width(),display.height())/2; i>0; i-=3) {
+    // The INVERSE color is used so circles alternate white/black
+    display.fillCircle(display.width()/2, display.height()/2, i, SSD1306_INVERSE);
+    display.display();
+    delay(1);
+  }
+
+  delay(2000);
+}
+
+void testdrawroundrect(void) {
+  display.clearDisplay();
+
+  for(int16_t i=0; i<display.height()/2-2; i+=2) {
+    display.drawRoundRect(i, i, display.width()-2*i, display.height()-2*i,
+      display.height()/4, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+
+  delay(2000);
+}
+
+void testfillroundrect(void) {
+  display.clearDisplay();
+
+  for(int16_t i=0; i<display.height()/2-2; i+=2) {
+    // The INVERSE color is used so round rectangles alternate white/black
+    display.fillRoundRect(i, i, display.width()-2*i, display.height()-2*i,
+      display.height()/4, SSD1306_INVERSE);
+    display.display();
+    delay(1);
+  }
+
+  delay(2000);
+}
+
+void testdrawtriangle(void) {
+  display.clearDisplay();
+
+  for(int16_t i=0; i<max(display.width(),display.height())/2; i+=5) {
+    display.drawTriangle(
+      display.width()/2, display.height()/2-i,
+      display.width()/2-i, display.height()/2+i,
+      display.width()/2+i, display.height()/2+i, SSD1306_WHITE);
+    display.display();
+    delay(1);
+  }
+
+  delay(2000);
+}
+
+void testfilltriangle(void) {
+  display.clearDisplay();
+
+  for(int16_t i=max(display.width(),display.height())/2; i>0; i-=5) {
+    // The INVERSE color is used so triangles alternate white/black
+    display.fillTriangle(
+      display.width()/2, display.height()/2-i,
+      display.width()/2-i, display.height()/2+i,
+      display.width()/2+i, display.height()/2+i, SSD1306_INVERSE);
+    display.display();
+    delay(1);
+  }
+  delay(2000);
+}
+
+
+void testdrawbitmap(void) {
+  display.clearDisplay();
+
+  display.drawBitmap(
+    (display.width() - LOGO_WIDTH ) / 2,
+    (display.height() - LOGO_HEIGHT) / 2,
+    logo_bmp, LOGO_WIDTH, LOGO_HEIGHT, 1);
+  display.display();
+  delay(1000);
+}
+
+
+void testanimate(const uint8_t *bitmap, uint8_t w, uint8_t h) {
+  int8_t f, icons[NUMFLAKES][3];
+
+  // initialize
+  for(f=0; f< NUMFLAKES; f++) {
+    icons[f][0] = random(1 - w, display.width());
+    icons[f][1] = -h;
+    icons[f][2] = random(1, 6);
+  }
+
+  // Animate for 200 frames
+  for (int j=0; j<200; j++) {
+    // draw each icon
+    for(f=0; f< NUMFLAKES; f++) {
+      display.drawBitmap(icons[f][0], icons[f][1], bitmap, w, h, SSD1306_WHITE);
+    }
+    display.display();
+    delay(10);
+
+    // then erase it + move it
+    display.clearDisplay();
+    for(f=0; f< NUMFLAKES; f++) {
+      icons[f][1] += icons[f][2];
+      // if its gone, reinit
+      if (icons[f][1] >= display.height()) {
+        icons[f][0] = random(1 - w, display.width());
+        icons[f][1] = -h;
+        icons[f][2] = random(1, 6);
+      }
+    }
+  }
+}
